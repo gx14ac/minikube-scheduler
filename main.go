@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/shintard/minikube-scheduler/apiserver"
 	"github.com/shintard/minikube-scheduler/config"
 	"k8s.io/klog/v2"
 )
@@ -18,8 +17,5 @@ func start() error {
 	if err != nil {
 		return err
 	}
-
-	apiserver.APIServerHolder{}
-
 	return nil
 }
