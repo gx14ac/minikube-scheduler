@@ -1,11 +1,25 @@
 package main
 
 import (
-	"github.com/shintard/minikube-scheduler/custom_scheduler"
-	"github.com/shintard/minikube-scheduler/custom_scheduler/queue"
+	"github.com/shintard/minikube-scheduler/apiserver"
+	"github.com/shintard/minikube-scheduler/config"
+	"k8s.io/klog/v2"
 )
 
 func main() {
-	_ = queue.NewQueue()
-	_ = custom_scheduler.Scheduler{}
+	if err := start(); err != nil {
+		klog.Fatalf("failed with error on running scheduler: %s", err.Error())
+	}
+	
+}
+
+func start() error {
+	_, err := config.NewConfig()
+	if err != nil {
+		return err
+	}
+
+	apiserver.APIServerHolder{}
+
+	return nil
 }
