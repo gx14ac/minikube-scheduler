@@ -33,11 +33,14 @@ replace (
 
 require (
 	github.com/google/uuid v1.1.2
+	golang.org/x/net v0.0.0-20210520170846-37e1c6afe023
 	k8s.io/api v1.22.0
+	k8s.io/apiextensions-apiserver v0.0.0
 	k8s.io/apimachinery v1.22.0
 	k8s.io/apiserver v1.22.0
 	k8s.io/client-go v1.22.0
 	k8s.io/klog/v2 v2.9.0
+	k8s.io/kube-openapi v0.0.0-20210421082810-95288971da7e
 	k8s.io/kubernetes v1.22.0
 )
 
@@ -118,7 +121,6 @@ require (
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.17.0 // indirect
 	golang.org/x/crypto v0.0.0-20210322153248-0c34fe9e7dc2 // indirect
-	golang.org/x/net v0.0.0-20210520170846-37e1c6afe023 // indirect
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d // indirect
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c // indirect
 	golang.org/x/sys v0.0.0-20210616094352-59db8d763f22 // indirect
@@ -140,7 +142,6 @@ require (
 	k8s.io/cluster-bootstrap v0.0.0 // indirect
 	k8s.io/component-base v0.22.0 // indirect
 	k8s.io/component-helpers v0.22.0 // indirect
-	k8s.io/kube-openapi v0.0.0-20210421082810-95288971da7e // indirect
 	k8s.io/kube-scheduler v1.22.0 // indirect
 	k8s.io/kubelet v0.0.0 // indirect
 	k8s.io/mount-utils v0.22.0 // indirect
