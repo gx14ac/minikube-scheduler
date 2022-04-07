@@ -9,6 +9,7 @@ import (
 	"github.com/shintard/minikube-scheduler/custom_scheduler/queue"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -46,6 +47,10 @@ func NewScheduler(
 	addEventHandlers(sched, informerFactory)
 
 	return &Scheduler{}
+}
+
+func (s *Scheduler) Run(ctx context.Context) {
+	wait.UntilWithContext(ctx, s.scheduleOne, 0)
 }
 
 // スケジューラーはscheduleOneというメソッドを無限に実行し続けるような形で実行されている
