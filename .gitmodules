@@ -1,3 +1,3 @@
-[submodule "submodule/kubernetes"]
-	path = submodule/kubernetes
+[submodule "submodules/kubernetes"]
+	path = submodules/kubernetes
 	url = git@github.com:kubernetes/kubernetes.git
