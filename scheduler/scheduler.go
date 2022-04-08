@@ -15,19 +15,19 @@ import (
 type SchedulerService struct {
 	shutdownFn func()
 
-	clientSet clientset.Interface
+	clientSet        clientset.Interface
 	restClientConfig *restclient.Config
-	currentSchedCfg *v1beta2config.KubeSchedulerConfiguration
+	currentSchedCfg  *v1beta2config.KubeSchedulerConfiguration
 }
 
 func NewSchedulerService(client clientset.Interface, restClientCfg *restclient.Config) *SchedulerService {
 	return &SchedulerService{
-		clientSet: client,
+		clientSet:        client,
 		restClientConfig: restClientCfg,
 	}
 }
 
-func (s *SchedulerService) StartScheduler(versionedCfg *v1beta2config.KubeSchedulerConfiguration) {
+func (s *SchedulerService) StartScheduler(versionedCfg *v1beta2config.KubeSchedulerConfiguration) error {
 	clientSet := s.clientSet
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -43,7 +43,10 @@ func (s *SchedulerService) StartScheduler(versionedCfg *v1beta2config.KubeSchedu
 	s.currentSchedCfg = versionedCfg.DeepCopy()
 
 	// カスタムスケジューラーの初期化設定
-	sched := custom_scheduler.NewScheduler(clientSet, informerFactory)
+	sched := custom_scheduler.NewScheduler(
+		clientSet,
+		informerFactory,
+	)
 
 	// 監視開始
 	informerFactory.Start(ctx.Done())
@@ -53,6 +56,8 @@ func (s *SchedulerService) StartScheduler(versionedCfg *v1beta2config.KubeSchedu
 	go sched.Run(ctx)
 
 	s.shutdownFn = cancel
+
+	return nil
 }
 
 func (s *SchedulerService) ShutdownScheduler() {
@@ -62,8 +67,12 @@ func (s *SchedulerService) ShutdownScheduler() {
 	}
 }
 
-func (s *SchedulerService) RestartScheduler(cfg *v1beta2config.KubeSchedulerConfiguration) {
+func (s *SchedulerService) RestartScheduler(cfg *v1beta2config.KubeSchedulerConfiguration) error {
 	s.ShutdownScheduler()
 
-	s.StartScheduler(cfg)
+	if err := s.StartScheduler(cfg); err != nil {
+		return err
+	}
+
+	return nil
 }
