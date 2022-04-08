@@ -18,23 +18,26 @@ type Queue struct {
 	// Podを入れておくためのQueue
 	activeQueue []*v1.Pod
 
-	mu *sync.RWMutex
+	// mu *sync.RWMutex
+	mu *sync.Cond
 }
 
 func NewQueue() *Queue {
 	return &Queue{
 		activeQueue: []*v1.Pod{},
-		mu:          &sync.RWMutex{},
+		mu:          sync.NewCond(&sync.Mutex{}),
 	}
 }
 
 // Queueを追加する
 //
 func (q *Queue) Add(pod *v1.Pod) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	q.mu.L.Lock()
+	defer q.mu.L.Unlock()
 
 	q.activeQueue = append(q.activeQueue, pod)
+	q.mu.Signal()
+	return
 }
 
 // Queueを取り出す
@@ -42,13 +45,13 @@ func (q *Queue) Add(pod *v1.Pod) {
 //
 func (q *Queue) NextPod() *v1.Pod {
 	// wait until pod is added to queue
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
+	q.mu.L.Lock()
 	for len(q.activeQueue) == 0 {
+		q.mu.Wait()
 	}
 
 	p := q.activeQueue[0]
 	q.activeQueue = q.activeQueue[1:]
+	q.mu.L.Unlock()
 	return p
 }

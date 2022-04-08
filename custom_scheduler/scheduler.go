@@ -46,7 +46,7 @@ func NewScheduler(
 
 	addEventHandlers(sched, informerFactory)
 
-	return &Scheduler{}
+	return sched
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
@@ -74,6 +74,8 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 
 	// select node randomly
 	selectedNode := nodes.Items[rand.Intn(len(nodes.Items))]
+
+	klog.Info("schduler: selected node " + selectedNode.Name)
 	err = s.Bind(ctx, pod, selectedNode.Name)
 	if err != nil {
 		klog.Error(err)
@@ -86,7 +88,7 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 func (s *Scheduler) Bind(ctx context.Context, p *v1.Pod, nodeName string) error {
 	binding := &v1.Binding{
 		ObjectMeta: metav1.ObjectMeta{Namespace: p.Namespace, Name: p.Name, UID: p.UID},
-		Target:     v1.ObjectReference{Kind: p.Kind, Namespace: nodeName},
+		Target:     v1.ObjectReference{Kind: "Node", Name: nodeName},
 	}
 
 	err := s.client.CoreV1().Pods(binding.Namespace).Bind(ctx, binding, metav1.CreateOptions{})
@@ -106,6 +108,7 @@ func (s *Scheduler) addPodToQueue(obj interface{}) {
 		return
 	}
 	s.Queue.Add(pod)
+	klog.Infof("add pod to queue: %s", pod.Name)
 }
 
 // Podがノードにアサインされているかどうか
@@ -139,32 +142,3 @@ func addEventHandlers(
 		},
 	)
 }
-
-// func createFilterPlugins(h waitingpod.Handle) ([]framework.FilterPlugin, error) {
-// 	nodeUnschedulablePlugin, err := createNodeUnschedulablePlugin()
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	filterPlugins := []framework.FilterPlugin{
-// 		nodeUnschedulablePlugin.(framework.FilterPlugin),
-// 	}
-
-// 	return filterPlugins, nil
-// }
-
-// var (
-// 	nodeunschedulableplugin framework.Plugin
-// 	nodenumberplugin        framework.Plugin
-// )
-
-// func createNodeUnschedulablePlugin() (framework.Plugin, error) {
-// 	if nodeunschedulableplugin != nil {
-// 		return nodeunschedulableplugin, nil
-// 	}
-
-// 	p, err := nodeunschedulable.New(nil, nil)
-// 	nodeunschedulableplugin = p
-
-// 	return p, err
-// }
