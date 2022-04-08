@@ -33,6 +33,6 @@ trap cleanup_etcd EXIT
 
 start_etcd
 
-PORT=1212 FRONTEND_URL=http://localhost:3000 ./bin/sched
+PORT=1212 FRONTEND_URL=http://localhost:3000 ./bin/main
 
 
