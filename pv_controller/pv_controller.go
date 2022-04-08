@@ -18,14 +18,14 @@ func StartPersistentVolumeController(client clientset.Interface) (func(), error)
 	ctx, cancel := context.WithCancel(context.Background())
 	informerFactory := informers.NewSharedInformerFactory(client, 0)
 	params := persistentvolume.ControllerParameters{
-		KubeClient: client,
-		SyncPeriod: 1 * time.Second,
-		VolumePlugins: append(local.ProbeVolumePlugins(), hostpath.ProbeVolumePlugins(volume.VolumeConfig{})...),
-		VolumeInformer: informerFactory.Core().V1().PersistentVolumes(),
-		ClaimInformer: informerFactory.Core().V1().PersistentVolumeClaims(),
-		ClassInformer: informerFactory.Storage().V1().StorageClasses(),
-		PodInformer: informerFactory.Core().V1().Pods(),
-		NodeInformer: informerFactory.Core().V1().Nodes(),
+		KubeClient:                client,
+		SyncPeriod:                1 * time.Second,
+		VolumePlugins:             append(local.ProbeVolumePlugins(), hostpath.ProbeVolumePlugins(volume.VolumeConfig{})...),
+		VolumeInformer:            informerFactory.Core().V1().PersistentVolumes(),
+		ClaimInformer:             informerFactory.Core().V1().PersistentVolumeClaims(),
+		ClassInformer:             informerFactory.Storage().V1().StorageClasses(),
+		PodInformer:               informerFactory.Core().V1().Pods(),
+		NodeInformer:              informerFactory.Core().V1().Nodes(),
 		EnableDynamicProvisioning: true,
 	}
 	volumeController, err := persistentvolume.NewController(params)
