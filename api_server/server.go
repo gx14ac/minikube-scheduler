@@ -16,6 +16,7 @@ import (
 	authenticatorunion "k8s.io/apiserver/pkg/authentication/request/union"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
+	authorizerunion "k8s.io/apiserver/pkg/authorization/union"
 	"k8s.io/apiserver/pkg/endpoints/openapi"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/options"
@@ -23,6 +24,7 @@ import (
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	utilflowcontrol "k8s.io/apiserver/pkg/util/flowcontrol"
 	"k8s.io/client-go/informers"
+	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/version"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -33,7 +35,6 @@ import (
 	con "k8s.io/kubernetes/pkg/controlplane"
 	"k8s.io/kubernetes/pkg/kubeapiserver"
 	kubeletclient "k8s.io/kubernetes/pkg/kubelet/client"
-	clientset "k8s.io/client-go/kubernetes"
 )
 
 func StartAPIServer(etcdURL string) (*restclient.Config, func(), error) {
@@ -51,10 +52,10 @@ func StartAPIServer(etcdURL string) (*restclient.Config, func(), error) {
 	}
 
 	cfg := &restclient.Config{
-		Host: s.URL,
+		Host:          s.URL,
 		ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}},
-		QPS: 5000.0,
-		Burst: 5000,
+		QPS:           5000.0,
+		Burst:         5000,
 	}
 
 	shutdownFunc := func() {
@@ -69,7 +70,7 @@ func StartAPIServer(etcdURL string) (*restclient.Config, func(), error) {
 }
 
 type APIServerHolder struct {
-	SetupCh chan struct{} 
+	SetupCh       chan struct{}
 	PlaneInstance *con.Instance
 }
 
@@ -90,7 +91,7 @@ func (fakeListener) Close() error {
 
 func (fakeListener) Addr() net.Addr {
 	return &net.TCPAddr{
-		IP: net.IPv4(127, 0, 0, 1),
+		IP:   net.IPv4(127, 0, 0, 1),
 		Port: 443,
 	}
 }
@@ -108,7 +109,7 @@ func defaultOpenAPIConfig() *openapicommon.Config {
 	openAPIConfig := genericapiserver.DefaultOpenAPIConfig(generated.GetOpenAPIDefinitions, openapi.NewDefinitionNamer(legacyscheme.Scheme))
 	openAPIConfig.Info = &spec.Info{
 		InfoProps: spec.InfoProps{
-			Title: "Kubernetes",
+			Title:   "Kubernetes",
 			Version: "unversioned",
 		},
 	}
@@ -132,12 +133,12 @@ func NewControlPlaneConfig(serverURL, etcdURL string) *con.Config {
 	// StorageFactoryはAPI Serverのデータをetcdなどのバックエンドに保存するために使用される
 	storageConfig := kubeapiserver.NewStorageFactoryConfig()
 	storageConfig.APIResourceConfig = serverstorage.NewResourceConfig()
-	
+
 	completeStorageConfig, err := storageConfig.Complete(etcdOptions)
 	if err != nil {
 		panic(err)
 	}
-	
+
 	// 作成が完了したStorageからStorageを取り出す
 	storageFactory, err := completeStorageConfig.New()
 	if err != nil {
@@ -150,8 +151,8 @@ func NewControlPlaneConfig(serverURL, etcdURL string) *con.Config {
 	if len(kubeVersion.Major) == 0 {
 		kubeVersion.Major = "1"
 	}
-	if len(kubeVersion.Major) == 0 {
-		kubeVersion.Major = "22"
+	if len(kubeVersion.Minor) == 0 {
+		kubeVersion.Minor = "22"
 	}
 	genericConfig.Version = &kubeVersion
 
@@ -169,10 +170,10 @@ func NewControlPlaneConfig(serverURL, etcdURL string) *con.Config {
 		GenericConfig: genericConfig,
 		ExtraConfig: controlplane.ExtraConfig{
 			APIResourceConfigSource: controlplane.DefaultAPIResourceConfigSource(),
-			StorageFactory: storageFactory,
-			KubeletClientConfig: kubeletclient.KubeletClientConfig{Port: 10250},
-			APIServerServicePort: 443,
-			MasterCount: 1,
+			StorageFactory:          storageFactory,
+			KubeletClientConfig:     kubeletclient.KubeletClientConfig{Port: 10250},
+			APIServerServicePort:    443,
+			MasterCount:             1,
 		},
 	}
 
@@ -184,16 +185,19 @@ func NewControlPlaneConfig(serverURL, etcdURL string) *con.Config {
 		// cotntrol planeがapi serverと通信するバーストレート
 		// https://kubernetes.io/docs/tasks/configure-pod-container/assign-cpu-resource/#motivation-for-cpu-requests-and-limits
 		// DefaultBurstは10
-		Burst: 100,
+		Burst:         100,
 		ContentConfig: restclient.ContentConfig{NegotiatedSerializer: legacyscheme.Codecs},
-		Host: serverURL,
-		BearerToken: privilegedLoopbackToken,
+		Host:          serverURL,
+		BearerToken:   privilegedLoopbackToken,
 	}
 
 	// set the user information associated with the Token
 	tokens := make(map[string]*user.DefaultInfo)
 	tokens[privilegedLoopbackToken] = &user.DefaultInfo{
-		Name: user.APIServerUser, UID: uuid.New().String(), Groups: []string{user.SystemPrivilegedGroup}, }
+		Name:   user.APIServerUser,
+		UID:    uuid.New().String(),
+		Groups: []string{user.SystemPrivilegedGroup},
+	}
 
 	// set token authenticator(認証局)
 	// 誰がRequestを送ってきたかを認証
@@ -203,10 +207,10 @@ func NewControlPlaneConfig(serverURL, etcdURL string) *con.Config {
 	// set token authorizer(認証者)
 	// 送ってきたリクエストに対して権限があるかどうかを検証
 	tokenAuthorizer := authorizerfactory.NewPrivilegedGroups(user.SystemPrivilegedGroup)
-	cfg.GenericConfig.Authorization.Authorizer = tokenAuthorizer
+	cfg.GenericConfig.Authorization.Authorizer = authorizerunion.New(tokenAuthorizer, authorizerfactory.NewAlwaysAllowAuthorizer())
 
 	cfg.GenericConfig.PublicAddress = net.ParseIP("192.168.10.4")
-	// genericConfig.SecureServing = &genericapiserver.SecureServingInfo{Listener: fakeListener{}}
+	genericConfig.SecureServing = &genericapiserver.SecureServingInfo{Listener: fakeListener{}}
 	cfg.GenericConfig.OpenAPIConfig = defaultOpenAPIConfig()
 
 	return cfg
