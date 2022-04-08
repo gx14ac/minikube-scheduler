@@ -6,14 +6,14 @@ import (
 )
 
 type Config struct {
-	Port int
-	EtcdURL string
+	Port        int
+	EtcdURL     string
 	FrontendURL string
 }
 
 var (
-	port int
-	etcdURL string
+	port        int
+	etcdURL     string
 	frontendURL string
 )
 
@@ -47,16 +47,14 @@ func init() {
 	if furl == "" {
 		panic("environment variable setting for $FRONTEND_URL is always required")
 	}
-	
+
 	frontendURL = furl
 }
 
-
 func NewConfig() (*Config, error) {
 	return &Config{
-		Port: port,
-		EtcdURL: etcdURL,
+		Port:        port,
+		EtcdURL:     etcdURL,
 		FrontendURL: frontendURL,
 	}, nil
 }
-
