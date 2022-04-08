@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shintard/minikube-scheduler/api_server"
+	apiserver "github.com/shintard/minikube-scheduler/api_server"
 	"github.com/shintard/minikube-scheduler/config"
 	pvcontroller "github.com/shintard/minikube-scheduler/pv_controller"
 	"github.com/shintard/minikube-scheduler/scheduler"
@@ -19,7 +19,7 @@ func main() {
 	if err := start(); err != nil {
 		klog.Fatalf("failed with error on running scheduler: %s", err.Error())
 	}
-	
+
 }
 
 func start() error {
@@ -41,7 +41,7 @@ func start() error {
 		return err
 	}
 	defer pvShutdown()
-	
+
 	sched := scheduler.NewSchedulerService(client, restClientCfg)
 
 	dsc, err := scheduler.DefaultSchedulerConfig()
@@ -49,7 +49,9 @@ func start() error {
 		return err
 	}
 
-	sched.StartScheduler(dsc)
+	if err := sched.StartScheduler(dsc); err != nil {
+		return err
+	}
 	defer sched.ShutdownScheduler()
 
 	err = scenario(client)
@@ -78,13 +80,12 @@ func scenario(client clientset.Interface) error {
 
 	klog.Info("scenario: all nodes created")
 
-	// create pod
 	_, err := client.CoreV1().Pods("default").Create(ctx, &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "pod1"},
 		Spec: v1.PodSpec{
 			Containers: []v1.Container{
 				{
-					Name: "container1",
+					Name:  "container1",
 					Image: "k8s.gcr.io/pause:3.5",
 				},
 			},
@@ -95,15 +96,15 @@ func scenario(client clientset.Interface) error {
 	}
 
 	klog.Infof("scenario: pod1 created")
-	
+
 	time.Sleep(4 * time.Second)
-	
+
 	pod, err := client.CoreV1().Pods("default").Get(ctx, "pod1", metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
 
-	klog.Infof("scenario: pod1 is bound to %s", &pod.Spec.NodeName)
+	klog.Info("scenario: pod1 is bound to " + pod.Spec.NodeName)
 
 	return nil
 }
