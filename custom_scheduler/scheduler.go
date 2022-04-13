@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"time"
 
+	node_number "github.com/shintard/minikube-scheduler/custom_scheduler/plugins/score/node_number"
 	"github.com/shintard/minikube-scheduler/custom_scheduler/queue"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,6 +17,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodeunschedulable"
 )
 
 func init() {
@@ -30,24 +32,34 @@ type Scheduler struct {
 	client clientset.Interface
 
 	// プラグインを実装するために必要なものたち
-	filterPlugins   []framework.FilterPlugin
-	preScopePlugins []framework.PreScorePlugin
-	scopePlugins    []framework.ScorePlugin
-	permitPlugins   []framework.PermitPlugin
+	filterPlugins []framework.FilterPlugin
+	scopePlugins  []framework.ScorePlugin
 }
 
 func NewScheduler(
 	client clientset.Interface,
 	informerFactory informers.SharedInformerFactory,
-) *Scheduler {
+) (*Scheduler, error) {
 	sched := &Scheduler{
 		Queue:  queue.NewQueue(),
 		client: client,
 	}
 
+	filterP, err := createFilterPlugins()
+	if err != nil {
+		return nil, fmt.Errorf("create filter plugins: %w", err)
+	}
+	sched.filterPlugins = filterP
+
+	scoreP, err := createScorePlugins()
+	if err != nil {
+		return nil, fmt.Errorf("create score plugins: %w", err)
+	}
+	sched.scopePlugins = scoreP
+
 	addEventHandlers(sched, informerFactory)
 
-	return sched
+	return sched, nil
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
@@ -86,7 +98,7 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 		return
 	}
 
-	klog.Infof("scheduler: score results ", score)
+	klog.Info("scheduler: score results ", score)
 
 	// select node randomly
 	selectedNode := nodes.Items[rand.Intn(len(nodes.Items))]
@@ -245,4 +257,60 @@ func (s *Scheduler) createPluginToNodeScores(nodes []*v1.Node) framework.PluginT
 	}
 
 	return pluginToNodeScores
+}
+
+// create plugins
+//
+func createFilterPlugins() ([]framework.FilterPlugin, error) {
+	nodeUnschedulablePlugin, err := createNodeUnschedulablePlugin()
+	if err != nil {
+		return nil, fmt.Errorf("create nodeUnschedulable Plugin: %w", err)
+	}
+
+	filterPlugins := []framework.FilterPlugin{
+		nodeUnschedulablePlugin.(framework.FilterPlugin),
+	}
+
+	return filterPlugins, nil
+}
+
+func createScorePlugins() ([]framework.ScorePlugin, error) {
+	nodeNumberPlugin, err := createNodeNumberPlugin()
+	if err != nil {
+		return nil, fmt.Errorf("create nodeNumber Plugin: %w", err)
+	}
+
+	scorePlugins := []framework.ScorePlugin{
+		nodeNumberPlugin.(framework.ScorePlugin),
+	}
+
+	return scorePlugins, nil
+}
+
+// initialize plugins
+//
+var (
+	nodeUnschedulablePlugin framework.Plugin
+	nodeNumberPlugin        framework.Plugin
+)
+
+func createNodeUnschedulablePlugin() (framework.Plugin, error) {
+	if nodeUnschedulablePlugin != nil {
+		return nodeUnschedulablePlugin, nil
+	}
+
+	p, err := nodeunschedulable.New(nil, nil)
+	nodeUnschedulablePlugin = p
+	return p, err
+}
+
+func createNodeNumberPlugin() (framework.Plugin, error) {
+	if nodeNumberPlugin != nil {
+		return nodeNumberPlugin, nil
+	}
+
+	p, err := node_number.New(nil, nil)
+	nodeNumberPlugin = p
+
+	return p, err
 }
