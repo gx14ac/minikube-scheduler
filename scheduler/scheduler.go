@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/shintard/minikube-scheduler/custom_scheduler"
 	clientset "k8s.io/client-go/kubernetes"
@@ -43,10 +44,14 @@ func (s *SchedulerService) StartScheduler(versionedCfg *v1beta2config.KubeSchedu
 	s.currentSchedCfg = versionedCfg.DeepCopy()
 
 	// カスタムスケジューラーの初期化設定
-	sched := custom_scheduler.NewScheduler(
+	sched, err := custom_scheduler.NewScheduler(
 		clientSet,
 		informerFactory,
 	)
+	if err != nil {
+		cancel()
+		return fmt.Errorf("create sched: %w", err)
+	}
 
 	// 監視開始
 	informerFactory.Start(ctx.Done())
