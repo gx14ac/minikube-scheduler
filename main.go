@@ -19,7 +19,6 @@ func main() {
 	if err := start(); err != nil {
 		klog.Fatalf("failed with error on running scheduler: %s", err.Error())
 	}
-
 }
 
 func start() error {

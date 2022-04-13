@@ -9,6 +9,7 @@ import (
 	"github.com/shintard/minikube-scheduler/custom_scheduler/queue"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
@@ -58,19 +59,34 @@ func (s *Scheduler) Run(ctx context.Context) {
 //
 func (s *Scheduler) scheduleOne(ctx context.Context) {
 	// get pod
-	//
 	klog.Info("scheduler: try to get pod from queue....")
 	pod := s.Queue.NextPod()
 	klog.Info("scheduler: start schedule(" + pod.Name + ")")
 
 	// get nodes
-	//
 	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		klog.Error(err)
 		return
 	}
-	klog.Info("schduler: successfully retrieved node")
+	klog.Info("scheduler: successfully retrieved node")
+
+	//filter
+	feasibleNodes, err := s.RunFilterPlugins(ctx, nil, pod, nodes.Items)
+	if err != nil {
+		klog.Error(err)
+		return
+	}
+	klog.Infof("scheduler: feasible nodes ", feasibleNodes)
+
+	// score
+	score, status := s.RunScorePlugins(ctx, nil, pod, feasibleNodes)
+	if !status.IsSuccess() {
+		klog.Error(status.AsError().Error())
+		return
+	}
+
+	klog.Infof("scheduler: score results ", score)
 
 	// select node randomly
 	selectedNode := nodes.Items[rand.Intn(len(nodes.Items))]
@@ -97,6 +113,84 @@ func (s *Scheduler) Bind(ctx context.Context, p *v1.Pod, nodeName string) error 
 	}
 
 	return nil
+}
+
+func (s *Scheduler) RunFilterPlugins(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []v1.Node) ([]*v1.Node, error) {
+	// Filterをくぐり抜けたNodes
+	feasibleNodes := make([]*v1.Node, 0, len(nodes))
+
+	// 何かしらのFilterプラグインに除外されたNodeがどのプラグインに拒否されたのかを保存しておく
+	// Filterの診断結果
+	// スケジューリングの不具合を診断するための内容が記録される。
+	diagnosis := framework.Diagnosis{
+		NodeToStatusMap:      make(framework.NodeToStatusMap),
+		UnschedulablePlugins: sets.NewString(),
+	}
+
+	for _, n := range nodes {
+		// nodeInfoに各Nodeをセット
+		nodeInfo := framework.NewNodeInfo()
+		nodeInfo.SetNode(&n)
+
+		status := framework.NewStatus(framework.Success)
+		for _, pl := range s.filterPlugins {
+			// Filterプラグインの実行
+			status = pl.Filter(ctx, state, pod, nodeInfo)
+			// プラグインがNodeを不適格とした場合
+			// Filterプラグインの不具合をdiagnosisに保存
+			if !status.IsSuccess() {
+				status.SetFailedPlugin(pl.Name())
+				diagnosis.UnschedulablePlugins.Insert(status.FailedPlugin())
+				break
+			}
+		}
+		if status.IsSuccess() {
+			feasibleNodes = append(feasibleNodes, nodeInfo.Node())
+		}
+	}
+
+	if len(feasibleNodes) == 0 {
+		return nil, &framework.FitError{
+			Pod:       pod,
+			Diagnosis: diagnosis,
+		}
+	}
+
+	return feasibleNodes, nil
+}
+
+func (s *Scheduler) RunScorePlugins(
+	ctx context.Context,
+	state *framework.CycleState,
+	pod *v1.Pod,
+	nodes []*v1.Node,
+) (framework.NodeScoreList, *framework.Status) {
+	scoresMap := s.createPluginToNodeScores(nodes)
+
+	// 各NodeのPluginを全て確認し、スコアリングする
+	for index, n := range nodes {
+		for _, pl := range s.scopePlugins {
+			score, status := pl.Score(ctx, state, pod, n.Name)
+			if !status.IsSuccess() {
+				return nil, status
+			}
+			scoresMap[pl.Name()][index] = framework.NodeScore{
+				Name:  n.Name,
+				Score: score,
+			}
+		}
+	}
+
+	// スコアリングの集計を行う
+	result := make(framework.NodeScoreList, 0, len(nodes))
+	for i := range nodes {
+		result = append(result, framework.NodeScore{Name: nodes[i].Name, Score: 0})
+		for j := range scoresMap {
+			result[i].Score += scoresMap[j][i].Score
+		}
+	}
+
+	return result, nil
 }
 
 // ノードにアサインされていないPodをQueueに追加する
@@ -141,4 +235,14 @@ func addEventHandlers(
 			},
 		},
 	)
+}
+
+// 各PluginのScoreをnodesの長さで作成
+func (s *Scheduler) createPluginToNodeScores(nodes []*v1.Node) framework.PluginToNodeScores {
+	pluginToNodeScores := make(framework.PluginToNodeScores, len(nodes))
+	for _, pl := range s.scopePlugins {
+		pluginToNodeScores[pl.Name()] = make(framework.NodeScoreList, len(nodes))
+	}
+
+	return pluginToNodeScores
 }
