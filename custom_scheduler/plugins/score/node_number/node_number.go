@@ -2,6 +2,7 @@ package nodenumber
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
@@ -12,8 +13,18 @@ import (
 type NodeNumber struct{}
 
 var _ framework.ScorePlugin = &NodeNumber{}
+var _ framework.PreScorePlugin = &NodeNumber{}
 
 const Name = "NodeNumber"
+const preScoreStateKey = "PreScore" + Name
+
+type preScoreState struct {
+	podSuffixNumber int
+}
+
+func (s *preScoreState) Clone() framework.StateData {
+	return s
+}
 
 func (pl *NodeNumber) Name() string {
 	return Name
@@ -22,19 +33,24 @@ func (pl *NodeNumber) Name() string {
 // Nodeの数字のPrefixとPodの数字のPrefixが一致するものが１０点得られる
 //
 func (pl *NodeNumber) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
-	podNameLastChar := pod.Name[len(pod.Name)-1:]
-	podNum, err := strconv.Atoi(podNameLastChar)
+	score, err := state.Read(preScoreStateKey)
 	if err != nil {
-		return 0, nil
+		return 0, framework.AsStatus(err)
+	}
+
+	s, ok := score.(*preScoreState)
+	if !ok {
+		return 0, framework.AsStatus(errors.New("failed to convert type pre score state"))
 	}
 
 	nodeNameLastChar := nodeName[len(nodeName)-1:]
+
 	nodeNum, err := strconv.Atoi(nodeNameLastChar)
 	if err != nil {
 		return 0, nil
 	}
 
-	if podNum == nodeNum {
+	if s.podSuffixNumber == nodeNum {
 		return 10, nil
 	}
 
@@ -42,6 +58,24 @@ func (pl *NodeNumber) Score(ctx context.Context, state *framework.CycleState, po
 }
 
 func (pl *NodeNumber) ScoreExtensions() framework.ScoreExtensions {
+	return nil
+}
+
+// PreScoreで事前にPodの名前の末尾の数字を取得してScoreではCycleStateから取得するよう
+//
+
+func (pl *NodeNumber) PreScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []*v1.Node) *framework.Status {
+	podNameLastChar := pod.Name[len(pod.Name)-1:]
+	podNum, err := strconv.Atoi(podNameLastChar)
+	if err != nil {
+		return nil
+	}
+
+	s := &preScoreState{
+		podSuffixNumber: podNum,
+	}
+	state.Write(preScoreStateKey, s)
+
 	return nil
 }
 

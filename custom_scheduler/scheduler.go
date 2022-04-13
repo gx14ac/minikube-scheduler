@@ -32,8 +32,9 @@ type Scheduler struct {
 	client clientset.Interface
 
 	// プラグインを実装するために必要なものたち
-	filterPlugins []framework.FilterPlugin
-	scopePlugins  []framework.ScorePlugin
+	filterPlugins   []framework.FilterPlugin
+	preScorePlugins []framework.PreScorePlugin
+	scopePlugins    []framework.ScorePlugin
 }
 
 func NewScheduler(
@@ -50,6 +51,12 @@ func NewScheduler(
 		return nil, fmt.Errorf("create filter plugins: %w", err)
 	}
 	sched.filterPlugins = filterP
+
+	preScoreP, err := createPreScorePlugins()
+	if err != nil {
+		return nil, fmt.Errorf("create pre score plugins: %w", err)
+	}
+	sched.preScorePlugins = preScoreP
 
 	scoreP, err := createScorePlugins()
 	if err != nil {
@@ -75,6 +82,8 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 	pod := s.Queue.NextPod()
 	klog.Info("scheduler: start schedule(" + pod.Name + ")")
 
+	state := framework.NewCycleState()
+
 	// get nodes
 	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -91,8 +100,16 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 	}
 	klog.Infof("scheduler: feasible nodes ", feasibleNodes)
 
+	// pre score
+	status := s.RunPreScorePlugins(ctx, state, pod, feasibleNodes)
+	if !status.IsSuccess() {
+		klog.Error(status.AsError())
+		return
+	}
+	klog.Infof("scheduler: run pre score plugins successfully ")
+
 	// score
-	score, status := s.RunScorePlugins(ctx, nil, pod, feasibleNodes)
+	score, status := s.RunScorePlugins(ctx, state, pod, feasibleNodes)
 	if !status.IsSuccess() {
 		klog.Error(status.AsError().Error())
 		return
@@ -205,6 +222,17 @@ func (s *Scheduler) RunScorePlugins(
 	return result, nil
 }
 
+func (s *Scheduler) RunPreScorePlugins(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []*v1.Node) *framework.Status {
+	for _, pl := range s.preScorePlugins {
+		status := pl.PreScore(ctx, state, pod, nodes)
+		if !status.IsSuccess() {
+			return status
+		}
+	}
+
+	return nil
+}
+
 // ノードにアサインされていないPodをQueueに追加する
 //
 func (s *Scheduler) addPodToQueue(obj interface{}) {
@@ -272,6 +300,20 @@ func createFilterPlugins() ([]framework.FilterPlugin, error) {
 	}
 
 	return filterPlugins, nil
+}
+
+func createPreScorePlugins() ([]framework.PreScorePlugin, error) {
+	// NodeNumber Pluginの　PreScoreなので、どのプラグインのPreScoreを実行するか知る必要がある
+	nodeNumberPlugin, err := createNodeNumberPlugin()
+	if err != nil {
+		return nil, fmt.Errorf("create nodeNumber Plugin: %w", err)
+	}
+
+	preScorePlugins := []framework.PreScorePlugin{
+		nodeNumberPlugin.(framework.PreScorePlugin),
+	}
+
+	return preScorePlugins, nil
 }
 
 func createScorePlugins() ([]framework.ScorePlugin, error) {
