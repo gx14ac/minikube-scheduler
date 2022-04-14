@@ -8,8 +8,10 @@ import (
 
 	node_number "github.com/shintard/minikube-scheduler/custom_scheduler/plugins/score/node_number"
 	"github.com/shintard/minikube-scheduler/custom_scheduler/queue"
+	waitingpod "github.com/shintard/minikube-scheduler/custom_scheduler/waiting_pod"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -31,9 +33,12 @@ type Scheduler struct {
 	// kubernetesのクラスタとやり取りするためのインターフェース
 	client clientset.Interface
 
+	waitingPods map[types.UID]*waitingpod.WaitingPod
+
 	// プラグインを実装するために必要なものたち
 	filterPlugins   []framework.FilterPlugin
 	preScorePlugins []framework.PreScorePlugin
+	permitPlugins   []framework.PermitPlugin
 	scopePlugins    []framework.ScorePlugin
 }
 
@@ -42,8 +47,9 @@ func NewScheduler(
 	informerFactory informers.SharedInformerFactory,
 ) (*Scheduler, error) {
 	sched := &Scheduler{
-		Queue:  queue.NewQueue(),
-		client: client,
+		Queue:       queue.NewQueue(),
+		client:      client,
+		waitingPods: map[types.UID]*waitingpod.WaitingPod{},
 	}
 
 	filterP, err := createFilterPlugins()
@@ -117,15 +123,36 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 
 	klog.Info("scheduler: score results ", score)
 
-	// select node randomly
-	selectedNode := nodes.Items[rand.Intn(len(nodes.Items))]
-
-	klog.Info("schduler: selected node " + selectedNode.Name)
-	err = s.Bind(ctx, pod, selectedNode.Name)
+	nodeName, err := s.selectHost(score)
 	if err != nil {
 		klog.Error(err)
 		return
 	}
+
+	klog.Info("scheduler: pod " + pod.Name + " will be bound to node " + nodeName)
+
+	status = s.RunPermitPlugins(ctx, state, pod, nodeName)
+	if !status.IsWait() && !status.IsSuccess() {
+		klog.Error(status.AsError())
+		return
+	}
+
+	go func() {
+		ctx := ctx
+
+		status := s.WaitOnPermit(ctx, pod)
+		if !status.IsSuccess() {
+			klog.Error(status.AsError())
+			return
+		}
+
+		if err := s.Bind(ctx, pod, nodeName); err != nil {
+			klog.Error(err)
+			return
+		}
+
+		klog.Info("scheduler: Bind Pod Successfully")
+	}()
 
 	klog.Info("scheduler: Bind Pod successfully")
 }
@@ -233,6 +260,76 @@ func (s *Scheduler) RunPreScorePlugins(ctx context.Context, state *framework.Cyc
 	return nil
 }
 
+// Bind Cycleの実行を中止、遅延を行う
+func (s *Scheduler) RunPermitPlugins(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (status *framework.Status) {
+	pluginsWaitTime := make(map[string]time.Duration)
+	statusCode := framework.Success
+	for _, pl := range s.permitPlugins {
+		status, timeOut := pl.Permit(ctx, state, pod, nodeName)
+		if !status.IsSuccess() {
+			// reject
+			if status.IsUnschedulable() {
+				klog.InfoS("Pod rejected by permit plugin", "pod", klog.KObj(pod), "plugin", pl.Name(), "status", status.Message())
+				status.SetFailedPlugin(pl.Name())
+				return status
+			}
+
+			// wait
+			if status.IsWait() {
+				pluginsWaitTime[pl.Name()] = timeOut
+				statusCode = framework.Wait
+				continue
+			}
+
+			// other errors
+			err := status.AsError()
+			klog.ErrorS(err, "Failed running Permit plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
+			return framework.AsStatus(fmt.Errorf("running permit plugin %q: %w", pl.Name(), err)).WithFailedPlugin(pl.Name())
+		}
+	}
+
+	if statusCode == framework.Wait {
+		// waitingPodの作成
+		// waitingPodはwait状態のPodに対して、「どのPluginが何秒までに結果を出すのか」を保持している構造体
+		waitingPod := waitingpod.NewWaitingPod(pod, pluginsWaitTime)
+		// waitingPodをスケジューラーに保存 (waitOnPermitで使用する)
+		s.waitingPods[pod.UID] = waitingPod
+		msg := fmt.Sprintf("One or more plugins asked to wait and no plugin rejected pod %q", pod.Name)
+		klog.InfoS("One or More plugins asked to wait and no plugin rejected pod", "pod", klog.KObj(pod))
+		return framework.NewStatus(framework.Wait, msg)
+	}
+
+	return nil
+}
+
+func (s *Scheduler) WaitOnPermit(ctx context.Context, pod *v1.Pod) *framework.Status {
+	wp := s.waitingPods[pod.UID]
+	if wp == nil {
+		return nil
+	}
+	defer delete(s.waitingPods, pod.UID)
+
+	klog.InfoS("Pod waiting on permit", "pod", klog.KObj(pod))
+
+	// Nodeが指定された時間にwaitingPodのStatusに状態を送るので、その状態をSignalが受け取る
+	status := wp.GetStatus()
+
+	if !status.IsSuccess() {
+		if status.IsUnschedulable() {
+			klog.InfoS("Pod rejected while waiting on permit", "pod", klog.KObj(pod), "status", status.Message())
+
+			status.SetFailedPlugin(status.FailedPlugin())
+			return status
+		}
+
+		err := status.AsError()
+		klog.ErrorS(err, "Failed waiting on permit for pod", "pod", klog.KObj(pod))
+		return framework.AsStatus(fmt.Errorf("waiting on permit for pod: %w", err)).WithFailedPlugin(status.FailedPlugin())
+	}
+
+	return nil
+}
+
 // ノードにアサインされていないPodをQueueに追加する
 //
 func (s *Scheduler) addPodToQueue(obj interface{}) {
@@ -285,6 +382,30 @@ func (s *Scheduler) createPluginToNodeScores(nodes []*v1.Node) framework.PluginT
 	}
 
 	return pluginToNodeScores
+}
+
+// 一番スコアの高いNodeの名前を返却する
+func (s *Scheduler) selectHost(nodeScoreList framework.NodeScoreList) (string, error) {
+	if len(nodeScoreList) == 0 {
+		return "", fmt.Errorf("empty priorityList")
+	}
+	maxScore := nodeScoreList[0].Score
+	selected := nodeScoreList[0].Name
+	cntOfMaxScore := 1
+	for _, ns := range nodeScoreList[1:] {
+		if ns.Score > maxScore {
+			maxScore = ns.Score
+			selected = ns.Name
+			cntOfMaxScore = 1
+		} else if ns.Score == maxScore {
+			cntOfMaxScore++
+			if rand.Intn(cntOfMaxScore) == 0 {
+				// Replace the candidate with probability of 1/cntOfMaxScore
+				selected = ns.Name
+			}
+		}
+	}
+	return selected, nil
 }
 
 // create plugins
