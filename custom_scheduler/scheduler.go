@@ -70,6 +70,12 @@ func NewScheduler(
 	}
 	sched.scopePlugins = scoreP
 
+	permitP, err := createPermitPlugins()
+	if err != nil {
+		return nil, fmt.Errorf("create permit plugins: %w", err)
+	}
+	sched.permitPlugins = permitP
+
 	addEventHandlers(sched, informerFactory)
 
 	return sched, nil
@@ -153,8 +159,6 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 
 		klog.Info("scheduler: Bind Pod Successfully")
 	}()
-
-	klog.Info("scheduler: Bind Pod successfully")
 }
 
 func (s *Scheduler) Bind(ctx context.Context, p *v1.Pod, nodeName string) error {
@@ -408,8 +412,38 @@ func (s *Scheduler) selectHost(nodeScoreList framework.NodeScoreList) (string, e
 	return selected, nil
 }
 
-// create plugins
+func (s *Scheduler) GetWaitingPod(uid types.UID) *waitingpod.WaitingPod {
+	return s.waitingPods[uid]
+}
+
+// initialize plugins
 //
+var (
+	nodeUnschedulablePlugin framework.Plugin
+	nodeNumberPlugin        framework.Plugin
+)
+
+func createNodeUnschedulablePlugin() (framework.Plugin, error) {
+	if nodeUnschedulablePlugin != nil {
+		return nodeUnschedulablePlugin, nil
+	}
+
+	p, err := nodeunschedulable.New(nil, nil)
+	nodeUnschedulablePlugin = p
+	return p, err
+}
+
+func createNodeNumberPlugin() (framework.Plugin, error) {
+	if nodeNumberPlugin != nil {
+		return nodeNumberPlugin, nil
+	}
+
+	p, err := node_number.New(nil, nil)
+	nodeNumberPlugin = p
+
+	return p, err
+}
+
 func createFilterPlugins() ([]framework.FilterPlugin, error) {
 	nodeUnschedulablePlugin, err := createNodeUnschedulablePlugin()
 	if err != nil {
@@ -450,30 +484,15 @@ func createScorePlugins() ([]framework.ScorePlugin, error) {
 	return scorePlugins, nil
 }
 
-// initialize plugins
-//
-var (
-	nodeUnschedulablePlugin framework.Plugin
-	nodeNumberPlugin        framework.Plugin
-)
-
-func createNodeUnschedulablePlugin() (framework.Plugin, error) {
-	if nodeUnschedulablePlugin != nil {
-		return nodeUnschedulablePlugin, nil
+func createPermitPlugins() ([]framework.PermitPlugin, error) {
+	nodeNumberPlugin, err := createNodeNumberPlugin()
+	if err != nil {
+		return nil, fmt.Errorf("create nodeNumber Plugin: %w", err)
 	}
 
-	p, err := nodeunschedulable.New(nil, nil)
-	nodeUnschedulablePlugin = p
-	return p, err
-}
-
-func createNodeNumberPlugin() (framework.Plugin, error) {
-	if nodeNumberPlugin != nil {
-		return nodeNumberPlugin, nil
+	permitPlugins := []framework.PermitPlugin{
+		nodeNumberPlugin.(framework.PermitPlugin),
 	}
 
-	p, err := node_number.New(nil, nil)
-	nodeNumberPlugin = p
-
-	return p, err
+	return permitPlugins, nil
 }

@@ -136,6 +136,7 @@ func scenario(client clientset.Interface) error {
 	if err != nil {
 		return fmt.Errorf("get pod: %w", err)
 	}
+
 	klog.Info("scenario: pod9 is bound to " + pod9.Spec.NodeName)
 
 	return nil

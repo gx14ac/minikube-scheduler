@@ -1,6 +1,7 @@
 package waitingpod
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -36,7 +37,9 @@ func NewWaitingPod(pod *v1.Pod, pluginsMaxWaitTime map[string]time.Duration) *Wa
 	// pluginが指定された時間でRejectするように
 	for plugin, waitTime := range pluginsMaxWaitTime {
 		wp.pendingPlugins[plugin] = time.AfterFunc(waitTime, func() {
-			// msg := fmt.Sprintf("rejected due to timeout after waiting %v at plugin %v", waitTime, plugin)
+			msg := fmt.Sprintf("rejected due to timeout after waiting %v at plugin %v",
+				waitTime, plugin)
+			wp.Reject(plugin, msg)
 		})
 	}
 
