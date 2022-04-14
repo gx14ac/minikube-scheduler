@@ -12,7 +12,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
@@ -52,25 +51,25 @@ func NewScheduler(
 		waitingPods: map[types.UID]*waitingpod.WaitingPod{},
 	}
 
-	filterP, err := createFilterPlugins()
+	filterP, err := createFilterPlugins(sched)
 	if err != nil {
 		return nil, fmt.Errorf("create filter plugins: %w", err)
 	}
 	sched.filterPlugins = filterP
 
-	preScoreP, err := createPreScorePlugins()
+	preScoreP, err := createPreScorePlugins(sched)
 	if err != nil {
 		return nil, fmt.Errorf("create pre score plugins: %w", err)
 	}
 	sched.preScorePlugins = preScoreP
 
-	scoreP, err := createScorePlugins()
+	scoreP, err := createScorePlugins(sched)
 	if err != nil {
 		return nil, fmt.Errorf("create score plugins: %w", err)
 	}
 	sched.scopePlugins = scoreP
 
-	permitP, err := createPermitPlugins()
+	permitP, err := createPermitPlugins(sched)
 	if err != nil {
 		return nil, fmt.Errorf("create permit plugins: %w", err)
 	}
@@ -105,15 +104,19 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 	klog.Info("scheduler: successfully retrieved node")
 
 	//filter
-	feasibleNodes, err := s.RunFilterPlugins(ctx, nil, pod, nodes.Items)
-	if err != nil {
+	feasibleNodes, status := s.RunFilterPlugins(ctx, state, pod, nodes.Items)
+	if !status.IsSuccess() {
 		klog.Error(err)
+		return
+	}
+	if len(feasibleNodes) == 0 {
+		klog.Info("no fasible nodes for " + pod.Name)
 		return
 	}
 	klog.Infof("scheduler: feasible nodes ", feasibleNodes)
 
 	// pre score
-	status := s.RunPreScorePlugins(ctx, state, pod, feasibleNodes)
+	status = s.RunPreScorePlugins(ctx, state, pod, feasibleNodes)
 	if !status.IsSuccess() {
 		klog.Error(status.AsError())
 		return
@@ -175,20 +178,13 @@ func (s *Scheduler) Bind(ctx context.Context, p *v1.Pod, nodeName string) error 
 	return nil
 }
 
-func (s *Scheduler) RunFilterPlugins(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []v1.Node) ([]*v1.Node, error) {
+func (s *Scheduler) RunFilterPlugins(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodes []v1.Node) ([]*v1.Node, *framework.Status) {
 	// Filterをくぐり抜けたNodes
 	feasibleNodes := make([]*v1.Node, 0, len(nodes))
 
-	// 何かしらのFilterプラグインに除外されたNodeがどのプラグインに拒否されたのかを保存しておく
-	// Filterの診断結果
-	// スケジューリングの不具合を診断するための内容が記録される。
-	diagnosis := framework.Diagnosis{
-		NodeToStatusMap:      make(framework.NodeToStatusMap),
-		UnschedulablePlugins: sets.NewString(),
-	}
-
 	for _, n := range nodes {
 		// nodeInfoに各Nodeをセット
+		n := n
 		nodeInfo := framework.NewNodeInfo()
 		nodeInfo.SetNode(&n)
 
@@ -200,19 +196,11 @@ func (s *Scheduler) RunFilterPlugins(ctx context.Context, state *framework.Cycle
 			// Filterプラグインの不具合をdiagnosisに保存
 			if !status.IsSuccess() {
 				status.SetFailedPlugin(pl.Name())
-				diagnosis.UnschedulablePlugins.Insert(status.FailedPlugin())
 				break
 			}
 		}
 		if status.IsSuccess() {
 			feasibleNodes = append(feasibleNodes, nodeInfo.Node())
-		}
-	}
-
-	if len(feasibleNodes) == 0 {
-		return nil, &framework.FitError{
-			Pod:       pod,
-			Diagnosis: diagnosis,
 		}
 	}
 
@@ -380,7 +368,7 @@ func addEventHandlers(
 
 // 各PluginのScoreをnodesの長さで作成
 func (s *Scheduler) createPluginToNodeScores(nodes []*v1.Node) framework.PluginToNodeScores {
-	pluginToNodeScores := make(framework.PluginToNodeScores, len(nodes))
+	pluginToNodeScores := make(framework.PluginToNodeScores, len(s.scopePlugins))
 	for _, pl := range s.scopePlugins {
 		pluginToNodeScores[pl.Name()] = make(framework.NodeScoreList, len(nodes))
 	}
@@ -433,18 +421,18 @@ func createNodeUnschedulablePlugin() (framework.Plugin, error) {
 	return p, err
 }
 
-func createNodeNumberPlugin() (framework.Plugin, error) {
+func createNodeNumberPlugin(h waitingpod.Handle) (framework.Plugin, error) {
 	if nodeNumberPlugin != nil {
 		return nodeNumberPlugin, nil
 	}
 
-	p, err := node_number.New(nil, nil)
+	p, err := node_number.New(nil, h)
 	nodeNumberPlugin = p
 
 	return p, err
 }
 
-func createFilterPlugins() ([]framework.FilterPlugin, error) {
+func createFilterPlugins(h waitingpod.Handle) ([]framework.FilterPlugin, error) {
 	nodeUnschedulablePlugin, err := createNodeUnschedulablePlugin()
 	if err != nil {
 		return nil, fmt.Errorf("create nodeUnschedulable Plugin: %w", err)
@@ -457,9 +445,9 @@ func createFilterPlugins() ([]framework.FilterPlugin, error) {
 	return filterPlugins, nil
 }
 
-func createPreScorePlugins() ([]framework.PreScorePlugin, error) {
+func createPreScorePlugins(h waitingpod.Handle) ([]framework.PreScorePlugin, error) {
 	// NodeNumber Pluginの　PreScoreなので、どのプラグインのPreScoreを実行するか知る必要がある
-	nodeNumberPlugin, err := createNodeNumberPlugin()
+	nodeNumberPlugin, err := createNodeNumberPlugin(h)
 	if err != nil {
 		return nil, fmt.Errorf("create nodeNumber Plugin: %w", err)
 	}
@@ -471,8 +459,8 @@ func createPreScorePlugins() ([]framework.PreScorePlugin, error) {
 	return preScorePlugins, nil
 }
 
-func createScorePlugins() ([]framework.ScorePlugin, error) {
-	nodeNumberPlugin, err := createNodeNumberPlugin()
+func createScorePlugins(h waitingpod.Handle) ([]framework.ScorePlugin, error) {
+	nodeNumberPlugin, err := createNodeNumberPlugin(h)
 	if err != nil {
 		return nil, fmt.Errorf("create nodeNumber Plugin: %w", err)
 	}
@@ -484,8 +472,8 @@ func createScorePlugins() ([]framework.ScorePlugin, error) {
 	return scorePlugins, nil
 }
 
-func createPermitPlugins() ([]framework.PermitPlugin, error) {
-	nodeNumberPlugin, err := createNodeNumberPlugin()
+func createPermitPlugins(h waitingpod.Handle) ([]framework.PermitPlugin, error) {
+	nodeNumberPlugin, err := createNodeNumberPlugin(h)
 	if err != nil {
 		return nil, fmt.Errorf("create nodeNumber Plugin: %w", err)
 	}

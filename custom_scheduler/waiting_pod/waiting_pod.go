@@ -35,7 +35,8 @@ func NewWaitingPod(pod *v1.Pod, pluginsMaxWaitTime map[string]time.Duration) *Wa
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
 	// pluginが指定された時間でRejectするように
-	for plugin, waitTime := range pluginsMaxWaitTime {
+	for k, v := range pluginsMaxWaitTime {
+		plugin, waitTime := k, v
 		wp.pendingPlugins[plugin] = time.AfterFunc(waitTime, func() {
 			msg := fmt.Sprintf("rejected due to timeout after waiting %v at plugin %v",
 				waitTime, plugin)

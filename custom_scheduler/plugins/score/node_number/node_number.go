@@ -102,6 +102,6 @@ func (pl *NodeNumber) Permit(ctx context.Context, state *framework.CycleState, p
 	return framework.NewStatus(framework.Wait, ""), timeOut
 }
 
-func New(_ runtime.Object, _ framework.Handle) (framework.Plugin, error) {
-	return &NodeNumber{}, nil
+func New(_ runtime.Object, h waitingpod.Handle) (framework.Plugin, error) {
+	return &NodeNumber{wt: h}, nil
 }
