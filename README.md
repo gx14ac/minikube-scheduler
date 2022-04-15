@@ -6,3 +6,5 @@ A Kuberenetes simulator (e.g. etcd) is launched behind the scenes to execute the
 You can run your own scheduler with the following command.
 
 `make start`
+# Demo
+https://i.gyazo.com/d414491b52ac8c71e23e9f8d2b9bb0cb.gif
