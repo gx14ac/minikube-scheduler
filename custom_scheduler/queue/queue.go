@@ -36,11 +36,12 @@ type Queue struct {
 	mu *sync.Cond
 }
 
-func NewQueue() *Queue {
+func NewQueue(clusterEventMap map[framework.ClusterEvent]sets.String) *Queue {
 	return &Queue{
 		activeQueue:        []*framework.QueuedPodInfo{},
 		podBackoffQueue:    []*framework.QueuedPodInfo{},
 		unschedulableQueue: map[string]*framework.QueuedPodInfo{},
+		clusterEventMap:    clusterEventMap,
 		mu:                 sync.NewCond(&sync.Mutex{}),
 	}
 }

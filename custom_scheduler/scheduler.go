@@ -12,6 +12,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
@@ -46,7 +47,6 @@ func NewScheduler(
 	informerFactory informers.SharedInformerFactory,
 ) (*Scheduler, error) {
 	sched := &Scheduler{
-		Queue:       queue.NewQueue(),
 		client:      client,
 		waitingPods: map[types.UID]*waitingpod.WaitingPod{},
 	}
@@ -75,7 +75,14 @@ func NewScheduler(
 	}
 	sched.permitPlugins = permitP
 
-	addEventHandlers(sched, informerFactory)
+	events, err := eventToRegister(sched)
+	if err != nil {
+		return nil, fmt.Errorf("create gvks: %w", err)
+	}
+
+	sched.Queue = queue.NewQueue(events)
+
+	addEventHandlers(sched, informerFactory, unionedGVKs(events))
 
 	return sched, nil
 }
@@ -348,6 +355,7 @@ func isAssignPod(pod *v1.Pod) bool {
 func addEventHandlers(
 	sched *Scheduler,
 	informerFactory informers.SharedInformerFactory,
+	gvkMap map[framework.GVK]framework.ActionType,
 ) {
 	informerFactory.Core().V1().Pods().Informer().AddEventHandler(
 		cache.FilteringResourceEventHandler{
@@ -368,6 +376,40 @@ func addEventHandlers(
 			},
 		},
 	)
+
+	// プラグインのFilterの結果が変わる可能性があるイベント登録
+	buildEventResourceHandler := func(at framework.ActionType, gvk framework.GVK, shortGVK string) cache.ResourceEventHandlerFuncs {
+		funcs := cache.ResourceEventHandlerFuncs{}
+		if at&framework.Add != 0 {
+			event := framework.ClusterEvent{Resource: gvk, ActionType: framework.Add, Label: fmt.Sprintf("%vAdd", shortGVK)}
+			funcs.AddFunc = func(_ interface{}) {
+				sched.Queue.MoveAllToActiveOrBackoffQueue(event)
+			}
+		}
+		if at&framework.Update != 0 {
+			event := framework.ClusterEvent{Resource: gvk, ActionType: framework.Update, Label: fmt.Sprintf("%vUpdate", shortGVK)}
+			funcs.AddFunc = func(_ interface{}) {
+				sched.Queue.MoveAllToActiveOrBackoffQueue(event)
+			}
+		}
+		if at&framework.Delete != 0 {
+			event := framework.ClusterEvent{Resource: gvk, ActionType: framework.Delete, Label: fmt.Sprintf("%vDelete", shortGVK)}
+			funcs.AddFunc = func(_ interface{}) {
+				sched.Queue.MoveAllToActiveOrBackoffQueue(event)
+			}
+		}
+
+		return funcs
+	}
+
+	for gvk, at := range gvkMap {
+		switch gvk {
+		case framework.Node:
+			informerFactory.Core().V1().Nodes().Informer().AddEventHandler(
+				buildEventResourceHandler(at, framework.Node, "Node"),
+			)
+		}
+	}
 }
 
 // 各PluginのScoreをnodesの長さで作成
@@ -507,4 +549,55 @@ func createPermitPlugins(h waitingpod.Handle) ([]framework.PermitPlugin, error) 
 	}
 
 	return permitPlugins, nil
+}
+
+func registerClusterEvent(
+	name string,
+	eventToPlugins map[framework.ClusterEvent]sets.String,
+	events []framework.ClusterEvent,
+) {
+	for _, event := range events {
+		if eventToPlugins[event] == nil {
+			eventToPlugins[event] = sets.NewString(name)
+		} else {
+			eventToPlugins[event].Insert(name)
+		}
+	}
+}
+
+func eventToRegister(h waitingpod.Handle) (map[framework.ClusterEvent]sets.String, error) {
+	nuSchedulablePlugin, err := createNodeUnschedulablePlugin()
+	if err != nil {
+		return nil, fmt.Errorf("create node unschedulable plugin: %w", err)
+	}
+	nNumberPlugin, err := createNodeNumberPlugin(h)
+	if err != nil {
+		return nil, fmt.Errorf("create node number plugin: %w", err)
+	}
+
+	clusterEventMap := make(map[framework.ClusterEvent]sets.String)
+
+	// register NodeUnschedulablePlugin
+	nuSchedulablePluginEvents := nuSchedulablePlugin.(framework.EnqueueExtensions).EventsToRegister()
+	registerClusterEvent(nuSchedulablePlugin.Name(), clusterEventMap, nuSchedulablePluginEvents)
+
+	// register NodeNumberPlugin
+	nNumberPluginEvents := nNumberPlugin.(framework.EnqueueExtensions).EventsToRegister()
+	registerClusterEvent(nNumberPlugin.Name(), clusterEventMap, nNumberPluginEvents)
+
+	return clusterEventMap, nil
+}
+
+// スケジューラーに登録されているプラグインのEnqueueExtensions.EventsToRegisterを集めて返す
+func unionedGVKs(m map[framework.ClusterEvent]sets.String) map[framework.GVK]framework.ActionType {
+	gvkMap := make(map[framework.GVK]framework.ActionType)
+	for evt := range m {
+		if _, ok := gvkMap[evt.Resource]; ok {
+			gvkMap[evt.Resource] |= evt.ActionType
+		} else {
+			gvkMap[evt.Resource] = evt.ActionType
+		}
+	}
+
+	return gvkMap
 }

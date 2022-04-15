@@ -105,3 +105,16 @@ func (pl *NodeNumber) Permit(ctx context.Context, state *framework.CycleState, p
 func New(_ runtime.Object, h waitingpod.Handle) (framework.Plugin, error) {
 	return &NodeNumber{wt: h}, nil
 }
+
+// NodeNumberプラグインのFilterの結果が変わる可能性があるイベントを[]ClusterEventの型で返却します
+//
+func (pl *NodeNumber) EventsToRegister() []framework.ClusterEvent {
+	return []framework.ClusterEvent{
+		{
+			// Nodeの.Spec.Unschedulableの変更
+			Resource: framework.Node,
+			// 新たなNodeの追加
+			ActionType: framework.Add,
+		},
+	}
+}
