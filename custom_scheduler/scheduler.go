@@ -99,6 +99,7 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		klog.Error(err)
+		s.ErrorFunc(pod, err)
 		return
 	}
 	klog.Info("scheduler: successfully retrieved node")
@@ -107,10 +108,7 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 	feasibleNodes, status := s.RunFilterPlugins(ctx, state, pod, nodes.Items)
 	if !status.IsSuccess() {
 		klog.Error(err)
-		return
-	}
-	if len(feasibleNodes) == 0 {
-		klog.Info("no fasible nodes for " + pod.Name)
+		s.ErrorFunc(pod, err)
 		return
 	}
 	klog.Infof("scheduler: feasible nodes ", feasibleNodes)
@@ -119,6 +117,7 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 	status = s.RunPreScorePlugins(ctx, state, pod, feasibleNodes)
 	if !status.IsSuccess() {
 		klog.Error(status.AsError())
+		s.ErrorFunc(pod, err)
 		return
 	}
 	klog.Infof("scheduler: run pre score plugins successfully ")
@@ -127,6 +126,7 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 	score, status := s.RunScorePlugins(ctx, state, pod, feasibleNodes)
 	if !status.IsSuccess() {
 		klog.Error(status.AsError().Error())
+		s.ErrorFunc(pod, err)
 		return
 	}
 
@@ -135,6 +135,7 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 	nodeName, err := s.selectHost(score)
 	if err != nil {
 		klog.Error(err)
+		s.ErrorFunc(pod, err)
 		return
 	}
 
@@ -143,6 +144,7 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 	status = s.RunPermitPlugins(ctx, state, pod, nodeName)
 	if !status.IsWait() && !status.IsSuccess() {
 		klog.Error(status.AsError())
+		s.ErrorFunc(pod, err)
 		return
 	}
 
@@ -152,11 +154,13 @@ func (s *Scheduler) scheduleOne(ctx context.Context) {
 		status := s.WaitOnPermit(ctx, pod)
 		if !status.IsSuccess() {
 			klog.Error(status.AsError())
+			s.ErrorFunc(pod, err)
 			return
 		}
 
 		if err := s.Bind(ctx, pod, nodeName); err != nil {
 			klog.Error(err)
+			s.ErrorFunc(pod, err)
 			return
 		}
 
@@ -402,6 +406,26 @@ func (s *Scheduler) selectHost(nodeScoreList framework.NodeScoreList) (string, e
 
 func (s *Scheduler) GetWaitingPod(uid types.UID) *waitingpod.WaitingPod {
 	return s.waitingPods[uid]
+}
+
+func (s *Scheduler) ErrorFunc(pod *v1.Pod, err error) {
+	podInfo := &framework.QueuedPodInfo{
+		PodInfo: framework.NewPodInfo(pod),
+	}
+
+	// Filter拡張点で候補のNodeが一つも残らず、スケジュールに失敗した時
+	if fitError, ok := err.(*framework.FitError); ok {
+		// fitError.Diagnosis.UnschedulablePluginsには
+		// スケジュール時にFilter拡張点にて一つ以上のNodeを却下した全てのプラグインが含まれている
+		podInfo.UnschedulablePlugins = fitError.Diagnosis.UnschedulablePlugins
+		klog.V(2).Info("Unable to schedule pod; retrying", "pod", klog.KObj(pod))
+	} else {
+		klog.ErrorS(err, "Error scheduling pod; retrying", "pod", klog.KObj(pod))
+	}
+
+	if err := s.Queue.AddUnschedulable(podInfo); err != nil {
+		klog.ErrorS(err, "Error occurred")
+	}
 }
 
 // initialize plugins

@@ -18,6 +18,8 @@ type PreEnqueueCheck func(pod *v1.Pod) bool
 type QueueExecuter interface {
 	Add(pod *v1.Pod)
 	NextPod() *v1.Pod
+	MoveAllToActiveOrBackoffQueue(event framework.ClusterEvent)
+	AddUnschedulable(pInfo *framework.QueuedPodInfo) error
 }
 
 type Queue struct {
